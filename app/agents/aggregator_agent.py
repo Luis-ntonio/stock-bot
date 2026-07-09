@@ -132,7 +132,7 @@ Toma la decisión final de inversión para el próximo mes.
         chart_patterns=(state.get("technical_analysis") or {}).get("chart_patterns", []),
         upcoming_earnings=state.get("upcoming_earnings"),
         earnings_history=state.get("earnings") or [],
-        llm_model_used=state.get("llm_model_used", "groq/llama-3.3-70b-versatile"),
+        llm_model_used=model_used,
         data_sources=state.get("data_sources", ["yfinance", "finnhub", "fmp"]),
     )
 

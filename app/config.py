@@ -17,7 +17,7 @@ class Settings(BaseSettings):
 
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_model: str = "gemini-2.5-flash"
-    ollama_model: str = "qwen2.5:32b"
+    ollama_model: str = "llama3.1:8b"
 
     # Datos US
     finnhub_api_key: str = ""

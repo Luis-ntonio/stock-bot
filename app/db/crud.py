@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, delete
 from datetime import date, datetime
 from app.db.models import Company, PriceHistory, FundamentalData, EarningsRecord, NewsItem, Suggestion
 from app.llm.schemas import StockSuggestion
@@ -13,6 +13,22 @@ def get_or_create_company(db: Session, ticker: str, name: str, market: str, **kw
         db.commit()
         db.refresh(company)
     return company
+
+
+def delete_company(db: Session, ticker: str) -> bool:
+    """Hard delete a company and all rows referencing it (price history,
+    fundamentals, earnings, news, suggestions). Returns False if the ticker
+    doesn't exist."""
+    company = db.get(Company, ticker)
+    if not company:
+        return False
+
+    for model in (PriceHistory, FundamentalData, EarningsRecord, NewsItem, Suggestion):
+        db.execute(delete(model).where(model.ticker == ticker))
+
+    db.delete(company)
+    db.commit()
+    return True
 
 
 def get_watchlist(db: Session, market: str | None = None) -> list[Company]:

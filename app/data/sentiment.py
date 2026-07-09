@@ -72,9 +72,14 @@ async def _stocktwits_sentiment(ticker: str) -> dict | None:
     await rl.acquire("stocktwits")
 
     try:
-        async with httpx.AsyncClient() as client:
+        from curl_cffi.requests import AsyncSession as CurlSession
+
+        # StockTwits blocks httpx's default TLS fingerprint (403 via Cloudflare);
+        # impersonating Chrome's TLS handshake gets through, same trick used for yfinance.
+        async with CurlSession() as client:
             r = await client.get(
                 f"{STOCKTWITS_BASE}/streams/symbol/{ticker}.json",
+                impersonate="chrome",
                 timeout=10,
             )
             r.raise_for_status()
@@ -84,14 +89,13 @@ async def _stocktwits_sentiment(ticker: str) -> dict | None:
         if not messages:
             return None
 
-        bullish = sum(
-            1 for m in messages
-            if m.get("entities", {}).get("sentiment", {}).get("basic") == "Bullish"
-        )
-        bearish = sum(
-            1 for m in messages
-            if m.get("entities", {}).get("sentiment", {}).get("basic") == "Bearish"
-        )
+        def _basic_sentiment(m: dict) -> str | None:
+            entities = m.get("entities") or {}
+            sentiment = entities.get("sentiment") or {}
+            return sentiment.get("basic")
+
+        bullish = sum(1 for m in messages if _basic_sentiment(m) == "Bullish")
+        bearish = sum(1 for m in messages if _basic_sentiment(m) == "Bearish")
         total = bullish + bearish
         if total == 0:
             sentiment = "neutral"

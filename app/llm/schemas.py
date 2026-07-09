@@ -52,7 +52,7 @@ class StockSuggestion(BaseModel):
     # Identificación
     ticker: str
     company_name: str
-    market: Literal["US", "CRYPTO", "LATAM"]
+    market: Literal["US", "CRYPTO", "LATAM", "EU"]
     analysis_date: datetime
 
     # Sugerencia central

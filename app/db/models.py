@@ -15,7 +15,7 @@ class Company(Base):
 
     ticker = Column(String(20), primary_key=True)
     name = Column(String(200), nullable=False)
-    market = Column(String(10), nullable=False)   # "US" | "CRYPTO" | "LATAM"
+    market = Column(String(10), nullable=False)   # "US" | "CRYPTO" | "LATAM" | "EU"
     sector = Column(String(100), nullable=True)
     industry = Column(String(100), nullable=True)
     active = Column(Boolean, default=True)

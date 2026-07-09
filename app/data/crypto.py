@@ -125,6 +125,39 @@ async def _coingecko_ohlcv(symbol: str, period: str) -> pd.DataFrame | None:
     return df
 
 
+async def get_company_info(symbol: str) -> dict[str, str | None]:
+    empty = {"name": None, "sector": None, "industry": None}
+
+    coin_id = COINGECKO_ID_MAP.get(symbol.upper())
+    if not coin_id:
+        return empty
+
+    rl = get_rate_limiter()
+    await rl.acquire("coingecko")
+
+    headers = {}
+    if settings.coingecko_api_key:
+        headers["x-cg-demo-api-key"] = settings.coingecko_api_key
+
+    try:
+        async with httpx.AsyncClient(headers=headers) as client:
+            r = await client.get(
+                f"{COINGECKO_BASE}/coins/{coin_id}",
+                params={
+                    "localization": "false", "tickers": "false",
+                    "market_data": "false", "community_data": "false",
+                    "developer_data": "false",
+                },
+                timeout=15,
+            )
+            r.raise_for_status()
+            data = r.json()
+        return {"name": data.get("name"), "sector": "Crypto", "industry": None}
+    except Exception as e:
+        logger.debug("CoinGecko company info failed", symbol=symbol, error=str(e))
+        return empty
+
+
 async def get_fundamentals(symbol: str) -> FundamentalSnapshot:
     rl = get_rate_limiter()
     await rl.acquire("coingecko")

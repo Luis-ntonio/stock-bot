@@ -15,7 +15,7 @@ RATE_LIMITS: dict[str, dict[str, int | None]] = {
     "sec_edgar":      {"rpm": 10,     "rpd": None},
     "groq_llama70b":  {"rpm": 30,     "rpd": 1_000},
     "groq_llama8b":   {"rpm": 30,     "rpd": 14_400},
-    "gemini_flash":   {"rpm": 10,     "rpd": 1_500},
+    "gemini_flash":   {"rpm": 10,     "rpd": 20},
     "ollama":         {"rpm": None,   "rpd": None},
     "binance":        {"rpm": 1_200,  "rpd": None},
     "stocktwits":     {"rpm": 60,     "rpd": None},
@@ -58,6 +58,16 @@ class RateLimiter:
     def _seconds_until_midnight() -> int:
         now = time.gmtime()
         return (23 - now.tm_hour) * 3600 + (59 - now.tm_min) * 60 + (60 - now.tm_sec)
+
+    async def mark_exhausted(self, provider: str, retry_after_secs: int | None = None) -> None:
+        """Flag a provider as out of quota (e.g. a server-side 429 with a daily
+        limit) so subsequent calls skip it immediately instead of re-hitting
+        the network and waiting on a response we already know will fail."""
+        ttl = retry_after_secs if retry_after_secs and retry_after_secs > 0 else self._seconds_until_midnight()
+        await self._redis.setex(f"rl:{provider}:exhausted", ttl, "1")
+
+    async def is_exhausted(self, provider: str) -> bool:
+        return bool(await self._redis.get(f"rl:{provider}:exhausted"))
 
     async def get_remaining(self, provider: str) -> dict[str, int | None]:
         limits = RATE_LIMITS.get(provider, {})

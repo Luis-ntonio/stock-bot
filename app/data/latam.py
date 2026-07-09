@@ -42,6 +42,22 @@ def _resolve_ticker(ticker: str) -> str:
     return ticker
 
 
+# Finnhub (fuente de peers para US) no cubre la BVL ni ADRs peruanos, así que
+# se usa un agrupamiento sectorial curado a mano entre los tickers soportados.
+LATAM_PEER_GROUPS: list[list[str]] = [
+    ["BAP", "IFS", "CREDITC1"],                  # Financiero
+    ["BVN", "CVERDEC1", "MINSURI1", "VOLCABC1"],  # Minería
+    ["ALICORC1", "INRETC1", "BACKUSC1"],          # Consumo / retail
+]
+
+
+async def get_peers(ticker: str, n: int = 5) -> list[str]:
+    for group in LATAM_PEER_GROUPS:
+        if ticker in group:
+            return [t for t in group if t != ticker][:n]
+    return []
+
+
 async def get_price_history(ticker: str, period: str = "1y") -> pd.DataFrame:
     yf_ticker = _resolve_ticker(ticker)
 

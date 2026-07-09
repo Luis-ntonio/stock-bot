@@ -20,6 +20,7 @@ class DataProvider:
     US: Finnhub → FMP → yfinance → cache DB
     Crypto: CoinGecko → Binance
     LATAM: Yahoo .LM → NYSE ADR → SMV WebService
+    EU: Yahoo (XETRA .DE y otras bolsas europeas)
     SEC filings: edgartools exclusivamente
 
     Cache layers (get_price_history):
@@ -62,11 +63,13 @@ class DataProvider:
             return db_df
 
         # Layer 3 — external API
-        from app.data import us_stocks, crypto, latam
+        from app.data import us_stocks, crypto, latam, europe
         if market == "CRYPTO":
             df = await crypto.get_price_history(ticker, period)
         elif market == "LATAM":
             df = await latam.get_price_history(ticker, period)
+        elif market == "EU":
+            df = await europe.get_price_history(ticker, period)
         else:
             df = await us_stocks.get_price_history(ticker, period, interval)
 
@@ -90,7 +93,20 @@ class DataProvider:
                     .where(PriceHistory.ticker == ticker, PriceHistory.date >= cutoff)
                     .order_by(PriceHistory.date)
                 )
-                return list(db.scalars(stmt))
+                # Extract plain values while the session is still open — the
+                # context manager commits on exit, which expires ORM attributes
+                # and makes them unreadable afterwards (DetachedInstanceError).
+                return [
+                    {
+                        "date": r.date,
+                        "open": r.open,
+                        "high": r.high,
+                        "low": r.low,
+                        "close": r.close,
+                        "volume": r.volume,
+                    }
+                    for r in db.scalars(stmt)
+                ]
 
         try:
             loop = asyncio.get_event_loop()
@@ -99,19 +115,12 @@ class DataProvider:
             if not rows:
                 return None
 
-            latest_date = rows[-1].date
+            latest_date = rows[-1]["date"]
             if (date.today() - latest_date).days > DB_CACHE_MAX_STALENESS_DAYS:
                 logger.debug("DB price data stale", ticker=ticker, latest=str(latest_date))
                 return None
 
-            df = pd.DataFrame([{
-                "date": r.date,
-                "open": r.open,
-                "high": r.high,
-                "low": r.low,
-                "close": r.close,
-                "volume": r.volume,
-            } for r in rows]).set_index("date")
+            df = pd.DataFrame(rows).set_index("date")
             return df
 
         except Exception as e:
@@ -154,12 +163,14 @@ class DataProvider:
             logger.warning("Failed to persist price history to DB", ticker=ticker, error=str(e))
 
     async def get_fundamentals(self, ticker: str, market: str = "US") -> FundamentalSnapshot:
-        from app.data import us_stocks, crypto, latam
+        from app.data import us_stocks, crypto, latam, europe
 
         if market == "CRYPTO":
             return await crypto.get_fundamentals(ticker)
         elif market == "LATAM":
             return await latam.get_fundamentals(ticker)
+        elif market == "EU":
+            return await europe.get_fundamentals(ticker)
         else:
             return await us_stocks.get_fundamentals(ticker)
 
@@ -171,7 +182,15 @@ class DataProvider:
         from app.data import us_stocks
         return await us_stocks.get_upcoming_earnings(ticker)
 
-    async def get_peers(self, ticker: str, n: int = 5) -> list[str]:
+    async def get_peers(self, ticker: str, n: int = 5, market: str = "US") -> list[str]:
+        if market == "EU":
+            from app.data import europe
+            return await europe.get_peers(ticker, n)
+        elif market == "LATAM":
+            from app.data import latam
+            return await latam.get_peers(ticker, n)
+        elif market == "CRYPTO":
+            return []
         from app.data import us_stocks
         return await us_stocks.get_peers(ticker, n)
 
@@ -188,24 +207,48 @@ class DataProvider:
         return await sentiment.get_sentiment(ticker)
 
     async def get_company_name(self, ticker: str, market: str = "US") -> str | None:
-        """Resolve human-readable company name via yfinance info."""
+        """Resolve human-readable company name."""
+        info = await self.get_company_info(ticker, market=market)
+        return info.get("name")
+
+    async def get_company_info(self, ticker: str, market: str = "US") -> dict[str, str | None]:
+        """Resolve name/sector/industry for watchlist autofill and analysis."""
+        empty = {"name": None, "sector": None, "industry": None}
+
         if market == "CRYPTO":
-            return None  # crypto name comes from CoinGecko market_data
+            from app.data import crypto
+            try:
+                return await crypto.get_company_info(ticker)
+            except Exception as e:
+                logger.debug("Company info lookup failed (crypto)", ticker=ticker, error=str(e))
+                return empty
+
+        yf_ticker = ticker
+        if market == "EU":
+            from app.data.europe import _resolve_ticker
+            yf_ticker = _resolve_ticker(ticker)
+        elif market == "LATAM":
+            from app.data.latam import _resolve_ticker
+            yf_ticker = _resolve_ticker(ticker)
 
         def _fetch():
             import yfinance as yf
             from curl_cffi.requests import Session as CurlSession
             with CurlSession(impersonate="chrome") as session:
-                t = yf.Ticker(ticker, session=session)
+                t = yf.Ticker(yf_ticker, session=session)
                 info = t.info or {}
-                return info.get("longName") or info.get("shortName")
+                return {
+                    "name": info.get("longName") or info.get("shortName"),
+                    "sector": info.get("sector"),
+                    "industry": info.get("industry"),
+                }
 
         try:
             loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, _fetch)
         except Exception as e:
-            logger.debug("Company name lookup failed", ticker=ticker, error=str(e))
-            return None
+            logger.debug("Company info lookup failed", ticker=ticker, market=market, error=str(e))
+            return empty
 
 
 _provider: DataProvider | None = None

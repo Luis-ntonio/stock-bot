@@ -113,15 +113,15 @@ async def fetch_data_node(state: AnalysisState) -> AnalysisState:
     except Exception as e:
         errors.append(f"sentiment: {e}")
 
-    # Peers + sus fundamentales (solo US)
+    # Peers + sus fundamentales (US: Finnhub: EU/LATAM: agrupamiento curado)
     peers_data = {}
-    if market == "US":
+    if market in ("US", "EU", "LATAM"):
         try:
-            peers = await provider.get_peers(ticker)
+            peers = await provider.get_peers(ticker, market=market)
             peer_fundamentals = []
             for p_ticker in peers[:5]:
                 try:
-                    pf = await provider.get_fundamentals(p_ticker, market="US")
+                    pf = await provider.get_fundamentals(p_ticker, market=market)
                     peer_fundamentals.append({"ticker": p_ticker, "fundamentals": pf.model_dump()})
                 except Exception:
                     peer_fundamentals.append({"ticker": p_ticker, "fundamentals": {}})
