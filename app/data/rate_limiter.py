@@ -13,6 +13,7 @@ RATE_LIMITS: dict[str, dict[str, int | None]] = {
     "coingecko":      {"rpm": 30,     "rpd": 10_000},
     "yfinance":       {"rpm": 60,     "rpd": None},
     "sec_edgar":      {"rpm": 10,     "rpd": None},
+    "smv":            {"rpm": 5,      "rpd": None},
     "groq_llama70b":  {"rpm": 30,     "rpd": 1_000},
     "groq_llama8b":   {"rpm": 30,     "rpd": 14_400},
     "gemini_flash":   {"rpm": 10,     "rpd": 20},

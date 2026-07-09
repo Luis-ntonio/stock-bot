@@ -36,4 +36,4 @@ def render_confidence_gauge(confidence: float, signal: str = "HOLD"):
         transition={"duration": 400, "easing": PLOTLY_EASING},
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")

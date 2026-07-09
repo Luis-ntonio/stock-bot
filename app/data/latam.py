@@ -1,6 +1,8 @@
 import asyncio
+import json
 import httpx
 import pandas as pd
+from datetime import datetime, timedelta, date
 from app.config import settings
 from app.data.rate_limiter import get_rate_limiter
 from app.llm.schemas import FundamentalSnapshot
@@ -34,6 +36,24 @@ LATAM_INDICES = {
 }
 
 SMV_WSDL = "https://mvnet.smv.gob.pe/ws_od_eeff/WebServiceInfoFinanciera.asmx?WSDL"
+
+# Mapa nemónico local -> RUC (identificador tributario peruano), requerido para
+# filtrar la respuesta de SMV (obtener_GanciaPerdida trae TODAS las empresas
+# reportantes en un solo payload, sin parámetro de filtro por empresa).
+# RUC verificado en vivo contra el WSDL real para ALICORC1; el resto queda
+# pendiente de lookup manual (mismo proceso: llamar obtener_GanciaPerdida,
+# buscar coincidencia de substring del nombre de la empresa en NombreEmpresa,
+# anotar el RUC asociado).
+TICKER_TO_RUC: dict[str, str] = {
+    "ALICORC1": "20100055237",  # Alicorp S.A.A. — verificado
+    # "CREDITC1": None,   # TODO: lookup RUC
+    # "CVERDEC1": None,   # TODO: lookup RUC
+    # "MINSURI1": None,   # TODO: lookup RUC
+    # "FERREYC1": None,   # TODO: lookup RUC
+    # "INRETC1":  None,   # TODO: lookup RUC
+    # "VOLCABC1": None,   # TODO: lookup RUC
+    # "BACKUSC1": None,   # TODO: lookup RUC
+}
 
 # Mapa: nemónico local → ticker yfinance
 def _resolve_ticker(ticker: str) -> str:
@@ -118,7 +138,19 @@ async def get_fundamentals(ticker: str) -> FundamentalSnapshot:
     # Para ADRs peruanos usar el mismo path que US stocks
     if ticker in PERU_ADRS:
         from app.data import us_stocks
-        return await us_stocks.get_fundamentals(ticker)
+        snapshot = await us_stocks.get_fundamentals(ticker)
+
+        # yfinance frecuentemente no trae debt_to_equity para estos ADRs —
+        # completar con Alpha Vantage (verificado en vivo para BAP) solo si
+        # hace falta, dado su límite diario muy ajustado (25/día).
+        if snapshot.debt_to_equity is None:
+            av_data = await _alpha_vantage_fundamentals(ticker)
+            if av_data:
+                snapshot = snapshot.model_copy(update={
+                    k: v for k, v in av_data.items()
+                    if getattr(snapshot, k, None) is None and v is not None
+                })
+        return snapshot
 
     # Para tickers BVL intentar SMV
     try:
@@ -129,85 +161,172 @@ async def get_fundamentals(ticker: str) -> FundamentalSnapshot:
     return FundamentalSnapshot()
 
 
+ALPHA_VANTAGE_BASE = "https://www.alphavantage.co/query"
+
+
+async def _alpha_vantage_fundamentals(ticker: str) -> dict | None:
+    """
+    Fallback para debt_to_equity en ADRs LATAM cuando yfinance no lo trae
+    (caso frecuente para BAP/BVN/SCCO/IFS). Verificado en vivo contra el API
+    real — funciona para tickers listados en US (incluye ADRs), no para
+    exchanges extranjeros directos (probado y confirmado vacío para .DE).
+
+    Free tier: 25 requests/día compartidos por toda la app — 1 llamada por
+    ticker (BALANCE_SHEET). Se usa el mismo mecanismo de exhaustion-flag que
+    Gemini para no reintentar todo el día una vez agotada la cuota.
+    """
+    if not settings.alpha_vantage_key:
+        return None
+
+    rl = get_rate_limiter()
+    if await rl.is_exhausted("alpha_vantage"):
+        return None
+
+    try:
+        await rl.acquire("alpha_vantage")
+        balance = await _av_call("BALANCE_SHEET", ticker)
+        if balance is None:
+            return None
+
+        reports = balance.get("annualReports") or []
+        if not reports:
+            return None
+
+        latest = reports[0]
+        liabilities = _av_float(latest.get("totalLiabilities"))
+        equity = _av_float(latest.get("totalShareholderEquity"))
+        if liabilities is None or not equity:
+            return None
+
+        return {"debt_to_equity": liabilities / equity}
+    except Exception as e:
+        logger.debug("Alpha Vantage fundamentals failed", ticker=ticker, error=str(e))
+        return None
+
+
+async def _av_call(function: str, ticker: str) -> dict | None:
+    async with httpx.AsyncClient() as client:
+        r = await client.get(ALPHA_VANTAGE_BASE, params={
+            "function": function, "symbol": ticker, "apikey": settings.alpha_vantage_key,
+        }, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+
+    if "Information" in data:
+        # Mensaje de cuota agotada (free tier: 25 req/día) — no es un error
+        # de red, es la respuesta real del API cuando se excede el límite.
+        rl = get_rate_limiter()
+        await rl.mark_exhausted("alpha_vantage")
+        logger.debug("Alpha Vantage quota exhausted for today", message=data["Information"])
+        return None
+
+    if not data:
+        return None
+
+    return data
+
+
+def _av_float(v) -> float | None:
+    try:
+        return float(v) if v not in (None, "None") else None
+    except (TypeError, ValueError):
+        return None
+
+
+# Cuenta codes verificados en vivo contra el WSDL real de SMV (obtener_GanciaPerdida)
+SMV_CUENTA_REVENUE = "2D01ST"      # "Ingresos de Actividades Ordinarias"
+SMV_CUENTA_NET_INCOME = "2D07ST"   # "Ganancia (Pérdida) Neta del Ejercicio"
+
+SMV_CACHE_TTL = timedelta(hours=24)
+# Los estados financieros no cambian intradía y el bot corre en cadencia mensual;
+# cachear evita re-descargar el payload completo (~5MB/~12k filas, TODAS las
+# empresas reportantes) por cada ticker BVL analizado en la misma corrida.
+_smv_cache: dict[str, tuple[datetime, list[dict]]] = {}
+
+
 async def _smv_fundamentals(ticker: str) -> FundamentalSnapshot:
     """
     Llama al web service SOAP de SMV para obtener fundamentales oficiales peruanos.
     Timeout generoso: SMV puede tardar 10-30 segundos.
+
+    obtener_GanciaPerdida(Ejercicio, Periodo, Tipo) devuelve un JSON string con
+    el estado de resultados de TODAS las empresas reportantes para ese
+    ejercicio/periodo/tipo — no hay parámetro de filtro por empresa en el SOAP.
+    Hay que descargar el dataset completo y filtrar client-side por RUC.
     """
+    ruc = TICKER_TO_RUC.get(ticker)
+    if not ruc:
+        logger.debug("No RUC known for ticker, skipping SMV lookup", ticker=ticker)
+        return FundamentalSnapshot()
+
+    ejercicio = str(date.today().year - 1)  # filings anuales tienen rezago
+
     try:
-        import zeep
-        from zeep.transports import Transport
-        import requests as req_sync
-
-        session = req_sync.Session()
-        session.timeout = 30
-
-        transport = Transport(session=session, timeout=30, operation_timeout=30)
-        loop = asyncio.get_event_loop()
-
-        def _call():
-            client = zeep.Client(wsdl=SMV_WSDL, transport=transport)
-            # Obtener estado de resultados del último período anual
-            result = client.service.obtener_GanciaPerdida(
-                ruc="",
-                nemonic=ticker,
-                periodo="202312",
-                tipo_periodo="A",
-            )
-            return result
-
-        result = await loop.run_in_executor(None, _call)
-        if result:
-            return _map_smv_response(result)
+        rows = await _fetch_smv_dataset(ejercicio)
+        return _extract_smv_fundamentals(rows, ruc)
     except Exception as e:
-        logger.debug("SMV SOAP failed", ticker=ticker, error=str(e))
+        logger.debug("SMV SOAP failed", ticker=ticker, ruc=ruc, error=str(e))
+        return FundamentalSnapshot()
 
-    return FundamentalSnapshot()
+
+async def _fetch_smv_dataset(ejercicio: str) -> list[dict]:
+    """Fetch (with in-memory cache) the full SMV annual-individual income
+    statement dataset for a given fiscal year, across all reporting companies."""
+    cached = _smv_cache.get(ejercicio)
+    if cached is not None:
+        cached_at, rows = cached
+        if datetime.utcnow() - cached_at < SMV_CACHE_TTL:
+            return rows
+
+    rl = get_rate_limiter()
+    await rl.acquire("smv")
+
+    import zeep
+    from zeep.transports import Transport
+    import requests as req_sync
+
+    session = req_sync.Session()
+    session.timeout = 30
+    transport = Transport(session=session, timeout=30, operation_timeout=30)
+    loop = asyncio.get_event_loop()
+
+    def _call():
+        client = zeep.Client(wsdl=SMV_WSDL, transport=transport)
+        return client.service.obtener_GanciaPerdida(
+            Ejercicio=ejercicio, Periodo="A", Tipo="I",
+        )
+
+    result = await loop.run_in_executor(None, _call)
+    rows = json.loads(result) if result else []
+
+    _smv_cache[ejercicio] = (datetime.utcnow(), rows)
+    return rows
 
 
-def _map_smv_response(result) -> FundamentalSnapshot:
+def _extract_smv_fundamentals(rows: list[dict], ruc: str) -> FundamentalSnapshot:
     """
-    Maps SMV SOAP GanciaPerdida response to FundamentalSnapshot.
-    SMV returns a list of period rows; we compare latest vs prior year.
-    Fields documented at: https://mvnet.smv.gob.pe/ws_od_eeff/
+    Filtra el dataset completo de SMV por RUC y por las cuentas de ingresos y
+    utilidad neta, calculando crecimiento YoY desde Monto1 (período actual) vs
+    Monto2 (mismo período, año anterior) de cada línea de cuenta.
     """
     try:
-        rows = result if isinstance(result, list) else getattr(result, "GanciaPerdida", []) or []
-        if not rows:
+        company_rows = [r for r in rows if r.get("RUC") == ruc]
+        if not company_rows:
             return FundamentalSnapshot()
 
-        def _val(row, key: str) -> float | None:
-            v = getattr(row, key, None)
-            if v is None:
-                v = row.get(key) if isinstance(row, dict) else None
-            try:
-                return float(v) if v is not None else None
-            except (TypeError, ValueError):
+        def _growth(cuenta: str) -> float | None:
+            row = next((r for r in company_rows if r.get("Cuenta") == cuenta), None)
+            if not row:
                 return None
-
-        # SMV rows ordered latest first; take first two for YoY comparison
-        latest = rows[0]
-        prior  = rows[1] if len(rows) > 1 else None
-
-        revenue_latest = _val(latest, "VentasNetas") or _val(latest, "IngresosTotales")
-        revenue_prior  = _val(prior, "VentasNetas") or _val(prior, "IngresosTotales") if prior else None
-        revenue_growth = (
-            (revenue_latest - revenue_prior) / abs(revenue_prior)
-            if revenue_latest is not None and revenue_prior and revenue_prior != 0
-            else None
-        )
-
-        net_income_latest = _val(latest, "UtilidadNeta") or _val(latest, "ResultadoNeto")
-        net_income_prior  = _val(prior, "UtilidadNeta") or _val(prior, "ResultadoNeto") if prior else None
-        earnings_growth = (
-            (net_income_latest - net_income_prior) / abs(net_income_prior)
-            if net_income_latest is not None and net_income_prior and net_income_prior != 0
-            else None
-        )
+            current = row.get("Monto1")
+            prior = row.get("Monto2")
+            if current is None or prior is None or prior == 0:
+                return None
+            return (current - prior) / abs(prior)
 
         return FundamentalSnapshot(
-            revenue_growth_yoy=revenue_growth,
-            earnings_growth_yoy=earnings_growth,
+            revenue_growth_yoy=_growth(SMV_CUENTA_REVENUE),
+            earnings_growth_yoy=_growth(SMV_CUENTA_NET_INCOME),
         )
     except Exception:
         return FundamentalSnapshot()

@@ -4,33 +4,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import streamlit as st
 import httpx
 from app.config import settings
+from dashboard.api_client import API_BASE, fetch_watchlist, fetch_latest_suggestion, invalidate_ticker
 from dashboard.constants import SIGNAL_COLORS, SIGNAL_ICONS
 from dashboard.components.animations import inject_page_transition
-
-API_BASE = f"http://localhost:{settings.fastapi_port}/api"
-
-
-@st.cache_data(ttl="15m", show_spinner="Cargando watchlist…")
-def fetch_watchlist(market: str | None = None) -> list[dict]:
-    params = {"market": market} if market else {}
-    try:
-        r = httpx.get(f"{API_BASE}/watchlist/", params=params, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"Error conectando a la API: {e}")
-        return []
-
-
-@st.cache_data(ttl="15m", show_spinner=False)
-def fetch_latest_suggestion(ticker: str) -> dict | None:
-    try:
-        r = httpx.get(f"{API_BASE}/suggestions/{ticker}/latest", timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        st.caption(f"⚠️ Sin datos para {ticker}: {e}")
-    return None
 
 
 st.set_page_config(page_title="Watchlist", page_icon="📋", layout="wide")
@@ -51,7 +27,7 @@ with st.expander("➕ Agregar ticker al watchlist"):
     lookup_ticker = lk1.text_input("Ticker", placeholder="AAPL", key="add_ticker_input").upper().strip()
     lookup_market = lk2.selectbox("Mercado", ["US", "CRYPTO", "LATAM", "EU"], key="add_market_input")
     lk3.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-    if lk3.button("🔍 Buscar", key="lookup_btn", use_container_width=True):
+    if lk3.button("🔍 Buscar", key="lookup_btn", width="stretch"):
         if not lookup_ticker:
             st.warning("Ingresa un ticker primero")
         else:
@@ -145,7 +121,7 @@ else:
                     )
                     if r.status_code == 200:
                         st.success(f"✓ Análisis de {ticker_str} completado")
-                        fetch_latest_suggestion.clear(ticker_str)
+                        invalidate_ticker(ticker_str)
                         st.rerun()
                     else:
                         st.error(r.text)
@@ -165,7 +141,7 @@ else:
                         st.success(f"✓ {ticker_str} eliminado")
                         st.session_state.pop(confirm_key, None)
                         fetch_watchlist.clear()
-                        fetch_latest_suggestion.clear(ticker_str)
+                        invalidate_ticker(ticker_str)
                         st.rerun()
                     else:
                         st.error(r.text)

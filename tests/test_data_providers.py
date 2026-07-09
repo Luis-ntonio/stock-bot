@@ -178,3 +178,165 @@ class TestDataProvider:
             mock.return_value = mock_df
             result = await provider.get_price_history("BAP", market="LATAM")
             mock.assert_called_once_with("BAP", "1y")
+
+
+# ── SMV (LATAM fundamentals) ─────────────────────────────────────────────────
+
+SMV_FIXTURE_ROWS = [
+    # Empresa objetivo (RUC coincide) — ingresos y utilidad neta
+    {"RUC": "20100055237", "NombreEmpresa": "ALICORP S.A.A.", "Cuenta": "2D01ST",
+     "DescripcionCuenta": "Ingresos de Actividades Ordinarias", "Monto1": 6685002, "Monto2": 7319192},
+    {"RUC": "20100055237", "NombreEmpresa": "ALICORP S.A.A.", "Cuenta": "2D07ST",
+     "DescripcionCuenta": "Ganancia (Perdida) Neta del Ejercicio", "Monto1": 188369, "Monto2": 524143},
+    # Fila de ruido: misma cuenta, otra empresa (RUC distinto) — no debe mezclarse
+    {"RUC": "99999999999", "NombreEmpresa": "OTRA EMPRESA S.A.", "Cuenta": "2D01ST",
+     "DescripcionCuenta": "Ingresos de Actividades Ordinarias", "Monto1": 1, "Monto2": 1},
+    # Fila de ruido: misma empresa, cuenta irrelevante — no debe afectar el cálculo
+    {"RUC": "20100055237", "NombreEmpresa": "ALICORP S.A.A.", "Cuenta": "2D0201",
+     "DescripcionCuenta": "Costo de Ventas", "Monto1": -5093073, "Monto2": -5979200},
+]
+
+
+class TestSmvFundamentals:
+    def test_extract_filters_by_ruc_and_computes_yoy_growth(self):
+        from app.data.latam import _extract_smv_fundamentals
+
+        snap = _extract_smv_fundamentals(SMV_FIXTURE_ROWS, ruc="20100055237")
+
+        assert snap.revenue_growth_yoy == pytest.approx((6685002 - 7319192) / abs(7319192))
+        assert snap.earnings_growth_yoy == pytest.approx((188369 - 524143) / abs(524143))
+
+    def test_extract_returns_empty_snapshot_for_unknown_ruc(self):
+        from app.data.latam import _extract_smv_fundamentals
+
+        snap = _extract_smv_fundamentals(SMV_FIXTURE_ROWS, ruc="00000000000")
+
+        assert snap.revenue_growth_yoy is None
+        assert snap.earnings_growth_yoy is None
+
+    @pytest.mark.asyncio
+    async def test_smv_fundamentals_skips_soap_call_when_ruc_unknown(self):
+        from app.data.latam import _smv_fundamentals
+
+        with patch("app.data.latam._fetch_smv_dataset", new_callable=AsyncMock) as mock_fetch:
+            snap = await _smv_fundamentals("SOME_TICKER_WITHOUT_RUC")
+            mock_fetch.assert_not_called()
+            assert snap.revenue_growth_yoy is None
+
+    @pytest.mark.asyncio
+    async def test_fetch_smv_dataset_uses_cache_within_ttl(self):
+        from app.data import latam
+
+        latam._smv_cache.clear()
+
+        with patch("app.data.latam.get_rate_limiter") as mock_get_rl, \
+             patch("zeep.Client") as mock_zeep_client:
+            mock_rl = AsyncMock()
+            mock_get_rl.return_value = mock_rl
+
+            mock_soap = MagicMock()
+            mock_soap.service.obtener_GanciaPerdida.return_value = "[]"
+            mock_zeep_client.return_value = mock_soap
+
+            await latam._fetch_smv_dataset("2025")
+            await latam._fetch_smv_dataset("2025")
+
+            assert mock_soap.service.obtener_GanciaPerdida.call_count == 1
+
+    def test_ticker_to_ruc_uses_real_soap_signature(self):
+        """Guards against regressing to the old broken kwargs (ruc/nemonic/
+        periodo/tipo_periodo) — the real WSDL signature is Ejercicio/Periodo/Tipo."""
+        import inspect
+        from app.data import latam
+
+        source = inspect.getsource(latam._fetch_smv_dataset)
+        assert "Ejercicio=" in source
+        assert "Periodo=" in source
+        assert "Tipo=" in source
+        assert "nemonic=" not in source
+        assert "tipo_periodo=" not in source
+
+
+# ── Alpha Vantage fallback (LATAM ADRs) ──────────────────────────────────────
+
+def _mock_av_response(json_data: dict) -> MagicMock:
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value=json_data)
+    return resp
+
+
+class TestAlphaVantageFundamentals:
+    @pytest.mark.asyncio
+    async def test_computes_debt_to_equity_from_balance_sheet(self):
+        from app.data import latam
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=_mock_av_response({
+            "annualReports": [{"totalLiabilities": "230004962000", "totalShareholderEquity": "36604559000"}]
+        }))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        mock_rl = AsyncMock()
+        mock_rl.is_exhausted = AsyncMock(return_value=False)
+
+        with patch("app.data.latam.settings") as mock_settings, \
+             patch("httpx.AsyncClient", return_value=mock_client), \
+             patch("app.data.latam.get_rate_limiter", return_value=mock_rl):
+            mock_settings.alpha_vantage_key = "fake_key"
+            result = await latam._alpha_vantage_fundamentals("BAP")
+
+        assert result == {"debt_to_equity": pytest.approx(230004962000 / 36604559000)}
+
+    @pytest.mark.asyncio
+    async def test_marks_exhausted_on_quota_message(self):
+        from app.data import latam
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=_mock_av_response({
+            "Information": "Thank you for using Alpha Vantage! ... 25 requests per day"
+        }))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        mock_rl = AsyncMock()
+        mock_rl.is_exhausted = AsyncMock(return_value=False)
+
+        with patch("app.data.latam.settings") as mock_settings, \
+             patch("httpx.AsyncClient", return_value=mock_client), \
+             patch("app.data.latam.get_rate_limiter", return_value=mock_rl):
+            mock_settings.alpha_vantage_key = "fake_key"
+            result = await latam._alpha_vantage_fundamentals("BAP")
+
+        assert result is None
+        mock_rl.mark_exhausted.assert_called_once_with("alpha_vantage")
+
+    @pytest.mark.asyncio
+    async def test_skips_network_call_when_already_exhausted(self):
+        from app.data import latam
+
+        mock_rl = AsyncMock()
+        mock_rl.is_exhausted = AsyncMock(return_value=True)
+
+        with patch("app.data.latam.settings") as mock_settings, \
+             patch("httpx.AsyncClient") as mock_client_cls, \
+             patch("app.data.latam.get_rate_limiter", return_value=mock_rl):
+            mock_settings.alpha_vantage_key = "fake_key"
+            result = await latam._alpha_vantage_fundamentals("BAP")
+
+        assert result is None
+        mock_client_cls.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_peru_adr_fundamentals_skips_av_when_yfinance_has_debt_to_equity(self):
+        from app.data import latam
+        from app.llm.schemas import FundamentalSnapshot
+
+        with patch("app.data.us_stocks.get_fundamentals", new_callable=AsyncMock) as mock_us, \
+             patch("app.data.latam._alpha_vantage_fundamentals", new_callable=AsyncMock) as mock_av:
+            mock_us.return_value = FundamentalSnapshot(debt_to_equity=1.5)
+            snap = await latam.get_fundamentals("BAP")
+
+        mock_av.assert_not_called()
+        assert snap.debt_to_equity == 1.5

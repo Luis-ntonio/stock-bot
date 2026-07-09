@@ -41,7 +41,7 @@ def render_price_chart(price_data: list[dict], ticker: str):
         legend={"bgcolor": "rgba(0,0,0,0)"},
         transition={"duration": 500, "easing": PLOTLY_EASING},
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_candlestick_chart(price_data: list[dict], ticker: str):
@@ -126,7 +126,7 @@ def render_candlestick_chart(price_data: list[dict], ticker: str):
     )
     fig.update_xaxes(showgrid=False, color="white")
     fig.update_yaxes(showgrid=True, gridcolor="rgba(255,255,255,0.05)", color="white")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_revenue_chart(earnings: list[dict], ticker: str):
@@ -161,7 +161,7 @@ def render_revenue_chart(earnings: list[dict], ticker: str):
         font={"color": "white"},
         transition={"duration": 500, "easing": PLOTLY_EASING},
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_peers_radar(peers_data: list[dict], ticker: str):
@@ -200,4 +200,4 @@ def render_peers_radar(peers_data: list[dict], ticker: str):
         font={"color": "white"},
         transition={"duration": 400, "easing": PLOTLY_EASING},
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")

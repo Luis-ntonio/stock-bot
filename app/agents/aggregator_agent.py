@@ -95,6 +95,8 @@ Toma la decisión final de inversión para el próximo mes.
         logger.error("Aggregator failed", ticker=ticker, error=str(e))
         return {**state, "errors": state.get("errors", []) + [f"aggregator: {e}"]}
 
+    _warn_if_confidence_diverges_from_scores(ticker, decision.confidence, state)
+
     # Construir StockSuggestion final
     fund_data = state.get("fundamentals") or {}
     sent_data = state.get("sentiment") or {}
@@ -173,3 +175,27 @@ def _extract_current_price(state: dict) -> float | None:
     if isinstance(price_data, dict) and "close" in price_data:
         return price_data.get("close")
     return None
+
+
+def _warn_if_confidence_diverges_from_scores(ticker: str, confidence: float, state: dict) -> None:
+    """Log-only sanity check: flag when the LLM's self-reported confidence is
+    far from what the sub-agent scores would suggest. Does not clamp or
+    override the LLM's decision — purely for visibility into calibration drift."""
+    scores = [
+        v.get("score")
+        for key in ("fundamental_analysis", "technical_analysis", "sentiment_analysis", "macro_analysis")
+        if (v := state.get(key)) and isinstance(v.get("score"), (int, float))
+    ]
+    if not scores:
+        return
+
+    avg_score = sum(scores) / len(scores)
+    divergence = abs(avg_score - confidence)
+    if divergence > 0.35:
+        logger.warning(
+            "Aggregator confidence diverges from sub-agent scores",
+            ticker=ticker,
+            confidence=confidence,
+            avg_sub_score=round(avg_score, 3),
+            divergence=round(divergence, 3),
+        )

@@ -2,42 +2,16 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import streamlit as st
-import httpx
 import pandas as pd
-from app.config import settings
+from dashboard.api_client import fetch_watchlist, fetch_latest_suggestion
 from dashboard.components.charts import render_revenue_chart
 from dashboard.components.animations import inject_page_transition
-
-API_BASE = f"http://localhost:{settings.fastapi_port}/api"
 
 st.set_page_config(page_title="Fundamentales", page_icon="📊", layout="wide")
 st.title("📊 Fundamentales")
 inject_page_transition()
 
-
-@st.cache_data(ttl="15m")
-def fetch_watchlist() -> list[str]:
-    try:
-        r = httpx.get(f"{API_BASE}/watchlist/", timeout=10)
-        r.raise_for_status()
-        return [t["ticker"] for t in r.json()]
-    except Exception as e:
-        st.error(f"No se pudo conectar a la API: {e}")
-        return []
-
-
-@st.cache_data(ttl="15m")
-def fetch_latest_suggestion(ticker: str) -> dict | None:
-    try:
-        r = httpx.get(f"{API_BASE}/suggestions/{ticker}/latest", timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        st.warning(f"Error cargando datos de {ticker}: {e}")
-    return None
-
-
-tickers = fetch_watchlist()
+tickers = [t["ticker"] for t in fetch_watchlist()]
 if not tickers:
     st.warning("No hay tickers en el watchlist.")
     st.stop()
@@ -73,7 +47,7 @@ with tab2:
     earnings = full_output.get("earnings_history") or []
     if earnings:
         render_revenue_chart(earnings, ticker)
-        st.dataframe(pd.DataFrame(earnings), use_container_width=True)
+        st.dataframe(pd.DataFrame(earnings), width="stretch")
     else:
         st.info("Datos de earnings no disponibles en este análisis.")
 

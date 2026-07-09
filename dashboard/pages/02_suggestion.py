@@ -4,54 +4,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import streamlit as st
 import httpx
 from datetime import date as _date
-from app.config import settings
+from dashboard.api_client import API_BASE, fetch_watchlist, fetch_ohlc, fetch_suggestions, invalidate_ticker
 from dashboard.components.signal_card import render_signal_card, get_conviction
 from dashboard.components.animations import EASING, inject_page_transition
 from dashboard.components.charts import render_candlestick_chart
 from dashboard.constants import SIGNAL_COLORS
 
-API_BASE = f"http://localhost:{settings.fastapi_port}/api"
-
 st.set_page_config(page_title="Sugerencia", page_icon="💡", layout="wide")
 st.title("Sugerencia")
 inject_page_transition()
-
-
-@st.cache_data(ttl="15m")
-def fetch_watchlist() -> list[dict]:
-    try:
-        r = httpx.get(f"{API_BASE}/watchlist/", timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"No se pudo conectar a la API: {e}. ¿Está corriendo `uvicorn app.main:app`?")
-        return []
-
-
-@st.cache_data(ttl="30m", show_spinner=False)
-def fetch_ohlc(ticker: str, period: str, market: str) -> list[dict]:
-    try:
-        r = httpx.get(
-            f"{API_BASE}/price/{ticker}/ohlc",
-            params={"period": period, "market": market},
-            timeout=20,
-        )
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        st.caption(f"⚠️ Sin datos OHLC para {ticker}: {e}")
-    return []
-
-
-@st.cache_data(ttl="15m")
-def fetch_suggestions(ticker: str) -> list[dict]:
-    try:
-        r = httpx.get(f"{API_BASE}/suggestions/{ticker}", params={"limit": 5}, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.warning(f"Error cargando sugerencias para {ticker}: {e}")
-        return []
 
 
 # ── Ticker selector + run button ─────────────────────────────────────────────
@@ -66,7 +27,7 @@ col_sel, col_btn, col_sp = st.columns([2, 1, 4])
 with col_sel:
     ticker = st.selectbox("Ticker", tickers, label_visibility="collapsed")
 with col_btn:
-    run = st.button("↻ Analizar", type="primary", use_container_width=True)
+    run = st.button("↻ Analizar", type="primary", width="stretch")
 
 if run:
     mkt = next((t.get("market", "US") for t in watchlist if t["ticker"] == ticker), "US")
@@ -79,7 +40,7 @@ if run:
             )
             if r.status_code == 200:
                 st.success("Análisis completado")
-                st.cache_data.clear()
+                invalidate_ticker(ticker)
                 st.rerun()
             else:
                 st.error(r.text)

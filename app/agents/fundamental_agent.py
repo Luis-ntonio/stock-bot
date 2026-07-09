@@ -25,9 +25,10 @@ async def run_fundamental_agent(state: dict) -> dict:
 
     client = get_llm_client()
 
+    market = state.get('market', 'US')
     user_content = f"""
 Analiza los fundamentales de {ticker}:
-
+{_market_data_note(market)}
 MÉTRICAS ACTUALES:
 - P/E Ratio: {fundamentals.get('pe_ratio', 'N/A')}
 - P/B Ratio: {fundamentals.get('pb_ratio', 'N/A')}
@@ -44,7 +45,7 @@ HISTORIAL EARNINGS (últimos quarters):
 PRÓXIMO EARNINGS:
 {_format_upcoming_earnings(upcoming_earnings)}
 
-Mercado: {state.get('market', 'US')}
+Mercado: {market}
 """
 
     messages = [
@@ -59,6 +60,22 @@ Mercado: {state.get('market', 'US')}
     except Exception as e:
         logger.error("Fundamental agent failed", ticker=ticker, error=str(e))
         return {"errors": [f"fundamental_agent: {e}"]}
+
+
+def _market_data_note(market: str) -> str:
+    if market in ("EU", "LATAM"):
+        return (
+            "NOTA: Para mercados EU/LATAM es normal que Debt/Equity, FCF Yield o "
+            "EPS Surprise histórico aparezcan como N/A por limitaciones de cobertura "
+            "de datos (no de la compañía) — NO lo interpretes como señal negativa, "
+            "evalúa solo con los campos disponibles.\n"
+        )
+    if market == "CRYPTO":
+        return (
+            "NOTA: P/E, P/B, Debt/Equity y EPS Surprise NO APLICAN a criptoactivos "
+            "por diseño — ignóralos, no son 'datos faltantes'.\n"
+        )
+    return ""
 
 
 def _format_earnings(earnings: list[dict]) -> str:

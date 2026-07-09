@@ -3,6 +3,7 @@ Tests de los agentes LLM.
 Ejecutar: pytest tests/test_agents.py -v
 """
 import pytest
+from datetime import datetime
 from unittest.mock import AsyncMock, patch, MagicMock
 from app.llm.schemas import (
     FundamentalSnapshot, SentimentSummary, Signal, RiskLevel,
@@ -143,8 +144,7 @@ class TestAggregatorAgent:
             mock_client.last_model = "llama-3.3-70b-versatile"
             mock_get.return_value = mock_client
 
-            with patch("app.agents.aggregator_agent.save_suggestion"):
-                result = await run_aggregator_agent(state)
+            result = await run_aggregator_agent(state)
 
         assert "suggestion" in result
         sug: StockSuggestion = result["suggestion"]
@@ -213,11 +213,41 @@ class TestAggregatorAgent:
             mock_client.last_model = "llama-3.3-70b-versatile"
             mock_get.return_value = mock_client
 
-            with patch("app.agents.aggregator_agent.save_suggestion"):
-                result = await run_aggregator_agent(state)
+            result = await run_aggregator_agent(state)
 
         sug = result["suggestion"]
         assert 0.0 <= sug.confidence <= 1.0, f"Confidence {sug.confidence} exceeds bounds"
+
+    def test_confidence_divergence_warns_when_scores_disagree(self):
+        """Log-only sanity check must fire when LLM confidence is far from
+        the average of the sub-agent scores (does not clamp/override)."""
+        from app.agents.aggregator_agent import _warn_if_confidence_diverges_from_scores
+
+        state = {
+            "fundamental_analysis": {"score": 0.9},
+            "technical_analysis": {"score": 0.85},
+            "sentiment_analysis": {"score": 0.8},
+            "macro_analysis": {"score": 0.75},
+        }
+
+        with patch("app.agents.aggregator_agent.logger") as mock_logger:
+            _warn_if_confidence_diverges_from_scores("TEST", 0.3, state)
+            mock_logger.warning.assert_called_once()
+
+    def test_confidence_divergence_silent_when_scores_agree(self):
+        """No warning when the LLM's confidence is consistent with sub-agent scores."""
+        from app.agents.aggregator_agent import _warn_if_confidence_diverges_from_scores
+
+        state = {
+            "fundamental_analysis": {"score": 0.9},
+            "technical_analysis": {"score": 0.85},
+            "sentiment_analysis": {"score": 0.8},
+            "macro_analysis": {"score": 0.75},
+        }
+
+        with patch("app.agents.aggregator_agent.logger") as mock_logger:
+            _warn_if_confidence_diverges_from_scores("TEST", 0.8, state)
+            mock_logger.warning.assert_not_called()
 
 
 # ── Workflow ──────────────────────────────────────────────────────────────────
@@ -284,6 +314,7 @@ class TestStockSuggestionContract:
             ticker="AAPL",
             company_name="Apple Inc.",
             market="US",
+            analysis_date=datetime.utcnow(),
             signal=Signal.BUY,
             confidence=0.75,
             risk_level=RiskLevel.MEDIUM,

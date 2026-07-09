@@ -3,13 +3,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import streamlit as st
 import httpx
-import asyncio
-from app.config import settings
 from app.data.latam import BVL_TICKERS_YF, PERU_ADRS, LATAM_INDICES
+from dashboard.api_client import API_BASE, fetch_latest_suggestion as fetch_suggestion
 from dashboard.constants import SIGNAL_ICONS, SIGNAL_COLORS
 from dashboard.components.animations import inject_page_transition, EASING
-
-API_BASE = f"http://localhost:{settings.fastapi_port}/api"
 
 st.set_page_config(page_title="LATAM / Perú", page_icon="🌎", layout="wide")
 st.title("🌎 LATAM / Perú")
@@ -23,17 +20,6 @@ st.info(
 
 # ── ADRs peruanos ───────────────────────────────────────────────────────────
 st.subheader("ADRs Peruanos (NYSE)")
-
-
-@st.cache_data(ttl="15m")
-def fetch_suggestion(ticker: str) -> dict | None:
-    try:
-        r = httpx.get(f"{API_BASE}/suggestions/{ticker}/latest", timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        st.warning(f"Error cargando sugerencia de {ticker}: {e}")
-    return None
 
 
 SIGNAL_COLOR = SIGNAL_ICONS
@@ -69,7 +55,7 @@ for nemonico, yf_ticker in BVL_TICKERS_YF.items():
     })
 
 import pandas as pd
-st.dataframe(pd.DataFrame(bvl_data), use_container_width=True)
+st.dataframe(pd.DataFrame(bvl_data), width="stretch")
 
 # ── Índices LATAM ────────────────────────────────────────────────────────────
 st.subheader("Índices LATAM")
@@ -78,10 +64,9 @@ st.caption("Fuente: Yahoo Finance")
 @st.cache_data(ttl="1h", show_spinner="Cargando índices LATAM…")
 def fetch_latam_indices() -> dict:
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        from app.data.latam import get_latam_indices
-        return loop.run_until_complete(get_latam_indices())
+        r = httpx.get(f"{API_BASE}/latam/indices", timeout=30)
+        r.raise_for_status()
+        return r.json()
     except Exception as e:
         st.warning(f"Error cargando índices LATAM: {e}")
         return {}

@@ -2,40 +2,14 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import streamlit as st
-import httpx
 import pandas as pd
-from app.config import settings
+from dashboard.api_client import fetch_watchlist, fetch_latest_suggestion as fetch_suggestion
 from dashboard.constants import SIGNAL_COLORS
 from dashboard.components.animations import inject_page_transition
-
-API_BASE = f"http://localhost:{settings.fastapi_port}/api"
 
 st.set_page_config(page_title="Earnings", page_icon="📅", layout="wide")
 st.title("📅 Earnings Calendar & History")
 inject_page_transition()
-
-
-@st.cache_data(ttl="15m")
-def fetch_watchlist() -> list[dict]:
-    try:
-        r = httpx.get(f"{API_BASE}/watchlist/", timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.error(f"No se pudo conectar a la API: {e}")
-        return []
-
-
-@st.cache_data(ttl="15m")
-def fetch_suggestion(ticker: str) -> dict | None:
-    try:
-        r = httpx.get(f"{API_BASE}/suggestions/{ticker}/latest", timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception as e:
-        st.warning(f"Error cargando sugerencia de {ticker}: {e}")
-    return None
-
 
 tickers = fetch_watchlist()
 if not tickers:
@@ -72,7 +46,7 @@ if rows:
             lambda v: f"color: {SIGNAL_COLORS['BUY']}" if "Beat" in str(v) else (f"color: {SIGNAL_COLORS['SELL']}" if "Miss" in str(v) else ""),
             subset=["Beat/Miss"]
         ),
-        use_container_width=True,
+        width="stretch",
     )
 else:
     st.info("No hay datos de earnings. Ejecuta análisis desde la página Watchlist.")
@@ -106,6 +80,6 @@ for t in tickers:
 
 if upcoming_rows:
     df_upcoming = pd.DataFrame(upcoming_rows).sort_values("Días")
-    st.dataframe(df_upcoming, use_container_width=True)
+    st.dataframe(df_upcoming, width="stretch")
 else:
     st.info("Sin earnings próximos en los siguientes 60 días para los tickers analizados. Ejecuta análisis primero.")
