@@ -46,6 +46,11 @@ class LLMClient:
             self._groq = AsyncOpenAI(
                 api_key=settings.groq_api_key,
                 base_url="https://api.groq.com/openai/v1",
+                # complete() ya tiene su propio loop de reintento/fallback entre
+                # proveedores — el reintento automático del SDK (default 2) es
+                # redundante y, peor, invisible: multiplica hasta 3x cualquier
+                # timeout antes de que nuestra lógica se entere (ver client.freetoken).
+                max_retries=0,
             )
         return self._groq
 
@@ -55,6 +60,7 @@ class LLMClient:
             self._ollama = AsyncOpenAI(
                 api_key="ollama",
                 base_url=f"{settings.ollama_base_url}/v1",
+                max_retries=0,
             )
         return self._ollama
 
@@ -73,6 +79,14 @@ class LLMClient:
                 # JSON, on top of queueing behind other concurrent requests (FreeToken
                 # serializes decode internally despite accepting concurrent connections).
                 timeout=600.0,
+                # El SDK reintenta automáticamente timeouts/429/5xx hasta max_retries
+                # veces (default 2) ANTES de propagar la excepción — verificado en el
+                # código fuente de openai-python (_base_client.py: "except
+                # timeout_exceptions()... if remaining_retries > 0: ... continue").
+                # Eso significa que el timeout real por intento no es 600s, son hasta
+                # 3×600s ≈ 1800s, invisible para complete()'s propio loop de fallback.
+                # Como ya tenemos ese fallback a nivel app, desactivamos el del SDK.
+                max_retries=0,
             )
         return self._freetoken
 

@@ -37,13 +37,21 @@ async def execute_job(job_id: int) -> None:
             from app.agents.position_agent import review_position
             with get_sync_db_session() as db:
                 position = get_position(db, position_id) if position_id else None
-            if not position:
-                raise ValueError(f"Position {position_id} not found")
+                if not position:
+                    raise ValueError(f"Position {position_id} not found")
+                # Extraer los campos ACÁ ADENTRO: get_sync_db_session hace
+                # commit() al salir (incluso en una lectura pura), lo que
+                # expira los atributos del objeto — acceder a ellos después
+                # de cerrado el bloque revienta con "not bound to a Session".
+                pos_ticker = position.ticker
+                pos_purchase_date = position.purchase_date
+                pos_purchase_price = position.purchase_price
+                pos_quantity = position.quantity
             result = await review_position(
-                ticker=position.ticker,
-                purchase_date=position.purchase_date,
-                purchase_price=position.purchase_price,
-                quantity=position.quantity,
+                ticker=pos_ticker,
+                purchase_date=pos_purchase_date,
+                purchase_price=pos_purchase_price,
+                quantity=pos_quantity,
                 market=market or "US",
             )
 
