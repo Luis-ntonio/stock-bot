@@ -194,6 +194,47 @@ ollama pull qwen2.5:7b    # 4.7GB
 
 Si usas un modelo diferente, cambia `OLLAMA_MODEL` en `.env`.
 
+### 3.9 (Opcional, experimental) Configurar FreeToken como LLM local
+
+[FreeToken](https://github.com/FlashML-org/FreeToken) es un motor de inferencia que sirve modelos MoE grandes (ej. Qwen3.6-35B-A3B) en GPUs de consumo, tratando VRAM+RAM+disco como una jerarquía de memoria elástica. Alternativa a Ollama con más capacidad de modelo, pero con requisitos más estrictos.
+
+**Requisitos:** Linux x86_64 nativo (sin WSL2/Docker oficial) + GPU NVIDIA con driver r580+/CUDA 13 + CUDA 13 toolkit (`nvcc` en el `PATH`) + suficiente RAM/disco para el modelo elegido (una cuantización NVFP4 de un MoE ~35B ronda 20GB en disco).
+
+```bash
+# CUDA 13 toolkit (si no lo tienes) — repo oficial de NVIDIA, ejemplo Ubuntu 24.04:
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb && sudo apt update
+sudo apt install -y cuda-toolkit-13-2   # usar la versión que matchee tu driver (ver `nvidia-smi`)
+export PATH=/usr/local/cuda/bin:$PATH   # agregar a ~/.bashrc para persistir
+
+# uv + FreeToken en un venv dedicado (no el de stock-bot)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv ~/freetoken-spike/.venv --python 3.12
+source ~/freetoken-spike/.venv/bin/activate
+uv pip install "freetoken[accel]"
+
+# Servir el modelo (primera vez compila kernels CUDA JIT, tarda ~1 min)
+ft serve --model nvidia/Qwen3.6-35B-A3B-NVFP4
+```
+
+Esperar el log `API server is ready to serve on 127.0.0.1:1919`, luego confirmar con:
+
+```bash
+curl http://127.0.0.1:1919/v1/models
+```
+
+**Nota conocida:** al menos para el checkpoint `nvidia/Qwen3.6-35B-A3B-NVFP4`, el downloader de `ft serve` no trae `model.safetensors.index.json` ni `hf_quant_config.json` aunque existen en el repo de Hugging Face — si falla con `FileNotFoundError` en la carga de "expert banks", bajalos manualmente antes de reintentar (sin necesidad de rehacer la descarga de los pesos):
+
+```bash
+python3 -c "
+from huggingface_hub import hf_hub_download
+for f in ['model.safetensors.index.json', 'hf_quant_config.json']:
+    hf_hub_download('nvidia/Qwen3.6-35B-A3B-NVFP4', f)
+"
+```
+
+Para activarlo, poné `PRIMARY_LLM=freetoken` (o `FALLBACK_LLM=freetoken`) en `.env`, con `FREETOKEN_BASE_URL`/`FREETOKEN_MODEL` apuntando al servidor levantado arriba. Es un modelo con razonamiento ("thinking") — responde con una cadena de pensamiento antes del JSON final, así que las respuestas tardan más que Groq/Gemini en producir el resultado final.
+
 ---
 
 ## 4. Levantar el proyecto

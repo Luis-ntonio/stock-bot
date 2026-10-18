@@ -18,6 +18,7 @@ RATE_LIMITS: dict[str, dict[str, int | None]] = {
     "groq_llama8b":   {"rpm": 30,     "rpd": 14_400},
     "gemini_flash":   {"rpm": 10,     "rpd": 20},
     "ollama":         {"rpm": None,   "rpd": None},
+    "freetoken":      {"rpm": None,   "rpd": None},
     "binance":        {"rpm": 1_200,  "rpd": None},
     "stocktwits":     {"rpm": 60,     "rpd": None},
     "apewisdom":      {"rpm": 10,     "rpd": None},

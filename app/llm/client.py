@@ -27,13 +27,15 @@ class ProviderExhausted(Exception):
 
 class LLMClient:
     """
-    Fallback chain: Groq (Llama 3.3 70B) → Gemini Flash → Ollama local.
+    Cadena de fallback configurable vía .env (PRIMARY_LLM/FALLBACK_LLM/LONG_CONTEXT_LLM):
+    Groq, Gemini, Ollama local, o FreeToken local.
     Siempre retorna objeto Pydantic validado. Nunca texto crudo.
     """
 
     def __init__(self):
         self._groq: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
+        self._freetoken: AsyncOpenAI | None = None
         self._gemini = None
         self.last_provider: str = "unknown"
         self.last_model: str = "unknown"
@@ -56,6 +58,24 @@ class LLMClient:
             )
         return self._ollama
 
+    @property
+    def freetoken(self) -> AsyncOpenAI:
+        if self._freetoken is None:
+            self._freetoken = AsyncOpenAI(
+                api_key="freetoken",
+                base_url=f"{settings.freetoken_base_url}/v1",
+                # FreeToken can hang indefinitely on some inputs (older builds; see
+                # plans/freetoken-integration.md) with no server-side timeout, so this
+                # bounds that failure mode. 180s was too tight under real concurrent
+                # load in the full-workflow test (Etapa 3 punto 5): this checkpoint is
+                # reasoning-heavy and single calls were observed generating 5k-9k+
+                # tokens (~150-220s of decode alone at ~41 tok/s) before the visible
+                # JSON, on top of queueing behind other concurrent requests (FreeToken
+                # serializes decode internally despite accepting concurrent connections).
+                timeout=600.0,
+            )
+        return self._freetoken
+
     def _get_provider_order(self, prefer_long_context: bool = False) -> list[tuple[str, str]]:
         if prefer_long_context:
             # Gemini primero para contextos largos (10-K completos)
@@ -72,6 +92,7 @@ class LLMClient:
             "groq": ("groq", settings.groq_model),
             "gemini": ("gemini", settings.gemini_model),
             "ollama": ("ollama", settings.ollama_model),
+            "freetoken": ("freetoken", settings.freetoken_model),
         }
 
         providers = [order_map[primary]]
@@ -141,6 +162,13 @@ class LLMClient:
             return await self._call_openai_compatible(self.groq, model, messages, schema, strict=False)
         elif provider == "ollama":
             return await self._call_openai_compatible(self.ollama, model, messages, schema, strict=False)
+        elif provider == "freetoken":
+            # FreeToken rejects response_format entirely (400: "no constrained
+            # decoding") — unlike Ollama/Groq, it must rely purely on the
+            # schema-in-prompt instruction below.
+            return await self._call_openai_compatible(
+                self.freetoken, model, messages, schema, strict=False, send_response_format=False
+            )
         elif provider == "gemini":
             return await self._call_gemini(model, messages, schema)
         else:
@@ -153,6 +181,7 @@ class LLMClient:
         messages: list[dict],
         schema: Type[T],
         strict: bool = True,
+        send_response_format: bool = True,
     ) -> T:
         json_schema = schema.model_json_schema()
 
@@ -167,7 +196,7 @@ class LLMClient:
             }
             call_messages = messages
         else:
-            response_format = {"type": "json_object"}
+            response_format = {"type": "json_object"} if send_response_format else None
             # Inject schema into last user message so model knows expected structure.
             # Weaker models (small local Ollama models) sometimes echo the schema
             # definition itself back as the "answer" — be explicit that this is a
@@ -186,11 +215,12 @@ class LLMClient:
                     )
                     break
 
+        extra_kwargs = {"response_format": response_format} if response_format is not None else {}
         resp = await client.chat.completions.create(
             model=model,
             messages=call_messages,
-            response_format=response_format,
             temperature=0.1,
+            **extra_kwargs,
         )
 
         content = resp.choices[0].message.content or ""

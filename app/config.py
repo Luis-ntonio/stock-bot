@@ -10,14 +10,16 @@ class Settings(BaseSettings):
     google_api_key: str = ""
     openrouter_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"
+    freetoken_base_url: str = "http://localhost:1919"
 
-    primary_llm: Literal["groq", "gemini", "ollama", "openrouter"] = "groq"
-    fallback_llm: Literal["groq", "gemini", "ollama", "openrouter"] = "ollama"
-    long_context_llm: Literal["groq", "gemini", "ollama", "openrouter"] = "gemini"
+    primary_llm: Literal["groq", "gemini", "ollama", "openrouter", "freetoken"] = "groq"
+    fallback_llm: Literal["groq", "gemini", "ollama", "openrouter", "freetoken"] = "ollama"
+    long_context_llm: Literal["groq", "gemini", "ollama", "openrouter", "freetoken"] = "gemini"
 
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_model: str = "gemini-2.5-flash"
     ollama_model: str = "llama3.1:8b"
+    freetoken_model: str = "Qwen3.6-35B-A3B-NVFP4"
 
     # Datos US
     finnhub_api_key: str = ""
