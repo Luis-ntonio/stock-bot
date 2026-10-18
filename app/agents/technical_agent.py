@@ -38,11 +38,45 @@ async def run_technical_agent(state: dict) -> dict:
 
     try:
         analysis = await client.complete(messages, TechnicalAnalysis)
+        result = analysis.model_dump()
+        # Los valores numéricos vienen de los datos ya calculados, no del LLM
+        # — pedirle que transcriba un número exacto en prosa es una fuente
+        # de error innecesaria cuando ya lo tenemos calculado en Python.
+        # Esto queda disponible para usuarios avanzados vía sub_analyses.
+        result["indicators"] = _extract_numeric_indicators(price_data)
         logger.info("Technical analysis complete", ticker=ticker, score=analysis.score)
-        return {"technical_analysis": analysis.model_dump()}
+        return {"technical_analysis": result}
     except Exception as e:
         logger.error("Technical agent failed", ticker=ticker, error=str(e))
         return {"errors": [f"technical_agent: {e}"]}
+
+
+def _extract_numeric_indicators(price_data: list[dict]) -> dict:
+    """Valores numéricos reales del último día disponible, para auditoría/
+    usuarios avanzados — independientes de lo que el LLM haya escrito en
+    los campos de texto (trend/momentum/etc)."""
+    if not price_data:
+        return {}
+    last = price_data[-1]
+
+    def _num(*keys) -> float | None:
+        for k in keys:
+            v = last.get(k)
+            if v is not None:
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    return {
+        "current_price": _num("close"),
+        "sma_50": _num("SMA_50", "sma_50"),
+        "sma_200": _num("SMA_200", "sma_200"),
+        "rsi_14": _num("RSI_14", "rsi_14"),
+        "macd": _num("MACD_12_26_9", "macd"),
+        "volume": last.get("volume"),
+    }
 
 
 def _extract_technical_summary(price_data: dict | list, ticker: str) -> str:

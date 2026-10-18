@@ -1,6 +1,7 @@
 import streamlit as st
 from dashboard.constants import SIGNAL_COLORS
 from dashboard.components.animations import inject_animations, SIGNAL_CARD_ANIM
+from dashboard.glossary import annotate_terms, plain_language_summary, render_glossary_expander
 
 _BUY  = SIGNAL_COLORS["BUY"]   # #00C851
 _SELL = SIGNAL_COLORS["SELL"]  # #ff4444
@@ -143,7 +144,17 @@ def render_signal_card(suggestion: dict):
 </div>
 """, unsafe_allow_html=True)
 
+    # ── Resumen en lenguaje simple (para quien recién arranca) ────────────────
+    st.markdown(
+        f'<div style="margin-top:10px;padding:10px 16px;background:#0f1923;'
+        f'border:1px solid #1e2938;border-radius:6px;color:#9aa5b1;font-size:0.85em;'
+        f'line-height:1.5;">💡 {plain_language_summary(signal, confidence, risk)}</div>',
+        unsafe_allow_html=True,
+    )
+
     # ── Bull / Bear cases ────────────────────────────────────────────────────
+    bull_html = annotate_terms(bull_case)
+    bear_html = annotate_terms(bear_case)
     if bull_case or bear_case:
         st.markdown(f"""
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
@@ -151,13 +162,13 @@ def render_signal_card(suggestion: dict):
               border-radius:6px;padding:16px 18px;">
     <div style="font-size:0.65em;color:{_BUY};letter-spacing:0.10em;font-weight:600;
                 text-transform:uppercase;margin-bottom:8px;">Bull case</div>
-    <div style="color:#c9d1d9;font-size:0.88em;line-height:1.65;">{bull_case}</div>
+    <div style="color:#c9d1d9;font-size:0.88em;line-height:1.65;">{bull_html}</div>
   </div>
   <div style="background:rgba(255,68,68,0.04);border:1px solid rgba(255,68,68,0.14);
               border-radius:6px;padding:16px 18px;">
     <div style="font-size:0.65em;color:{_SELL};letter-spacing:0.10em;font-weight:600;
                 text-transform:uppercase;margin-bottom:8px;">Bear case</div>
-    <div style="color:#c9d1d9;font-size:0.88em;line-height:1.65;">{bear_case}</div>
+    <div style="color:#c9d1d9;font-size:0.88em;line-height:1.65;">{bear_html}</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -166,9 +177,12 @@ def render_signal_card(suggestion: dict):
     if reasoning:
         with st.expander("Razonamiento del modelo"):
             st.markdown(
-                f'<div style="color:#c9d1d9;font-size:0.9em;line-height:1.7;">{reasoning}</div>',
+                f'<div style="color:#c9d1d9;font-size:0.9em;line-height:1.7;">{annotate_terms(reasoning)}</div>',
                 unsafe_allow_html=True,
             )
+
+    # ── Glosario ─────────────────────────────────────────────────────────────
+    render_glossary_expander(st)
 
     # ── Meta ─────────────────────────────────────────────────────────────────
     if llm_model or sources:

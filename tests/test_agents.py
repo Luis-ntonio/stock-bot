@@ -101,6 +101,77 @@ class TestFundamentalAgent:
         assert isinstance(fa["risks"], list)
 
 
+# ── Technical Agent ───────────────────────────────────────────────────────────
+
+class TestTechnicalAgent:
+    def test_extract_numeric_indicators_reads_last_row(self):
+        from app.agents.technical_agent import _extract_numeric_indicators
+
+        price_data = [
+            {"date": "2026-01-01", "close": 100.0, "SMA_50": 95.0, "SMA_200": 90.0,
+             "RSI_14": 55.3, "MACD_12_26_9": 1.2, "volume": 1_000_000},
+            {"date": "2026-01-02", "close": 102.5, "SMA_50": 95.5, "SMA_200": 90.2,
+             "RSI_14": 57.36, "MACD_12_26_9": 1.35, "volume": 1_100_000},
+        ]
+        ind = _extract_numeric_indicators(price_data)
+        # Debe leer SIEMPRE la última fila, no la primera.
+        assert ind["current_price"] == 102.5
+        assert ind["rsi_14"] == 57.36
+        assert ind["macd"] == 1.35
+        assert ind["sma_50"] == 95.5
+        assert ind["sma_200"] == 90.2
+        assert ind["volume"] == 1_100_000
+
+    def test_extract_numeric_indicators_accepts_lowercase_keys(self):
+        """app/data/provider.py a veces serializa en minúscula (sma_50 en
+        vez de SMA_50) — la función debe aceptar ambos formatos."""
+        from app.agents.technical_agent import _extract_numeric_indicators
+
+        price_data = [{"close": 50.0, "sma_50": 48.0, "sma_200": 45.0, "rsi_14": 40.1, "macd": -0.5}]
+        ind = _extract_numeric_indicators(price_data)
+        assert ind["sma_50"] == 48.0
+        assert ind["rsi_14"] == 40.1
+        assert ind["macd"] == -0.5
+
+    def test_extract_numeric_indicators_empty_input(self):
+        from app.agents.technical_agent import _extract_numeric_indicators
+        assert _extract_numeric_indicators([]) == {}
+
+    def test_extract_numeric_indicators_missing_fields_are_none(self):
+        from app.agents.technical_agent import _extract_numeric_indicators
+        ind = _extract_numeric_indicators([{"close": 100.0}])
+        assert ind["current_price"] == 100.0
+        assert ind["rsi_14"] is None
+        assert ind["macd"] is None
+
+    @pytest.mark.asyncio
+    async def test_run_technical_agent_merges_indicators_into_result(self):
+        from app.agents.technical_agent import run_technical_agent, TechnicalAnalysis
+
+        mock_analysis = TechnicalAnalysis(
+            trend="Alcista", momentum="RSI 57.36, MACD positivo",
+            support_resistance="Resistencia 110, soporte 95",
+            volume_assessment="En línea con el promedio",
+            cross_signal="Golden cross confirmado",
+            technical_verdict="Positivo", chart_patterns=[], score=0.8,
+        )
+        state = {
+            "ticker": "AAPL",
+            "price_data": [{"close": 102.5, "SMA_50": 95.5, "RSI_14": 57.36, "MACD_12_26_9": 1.35}],
+        }
+
+        with patch("app.agents.technical_agent.get_llm_client") as mock_get:
+            mock_client = MagicMock()
+            mock_client.complete = AsyncMock(return_value=mock_analysis)
+            mock_get.return_value = mock_client
+
+            result = await run_technical_agent(state)
+
+        ta = result["technical_analysis"]
+        assert ta["trend"] == "Alcista"  # campo del LLM, intacto
+        assert ta["indicators"]["rsi_14"] == 57.36  # número real, no el del LLM
+
+
 # ── Aggregator Agent ──────────────────────────────────────────────────────────
 
 class TestAggregatorAgent:

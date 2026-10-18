@@ -169,7 +169,17 @@ def _build_analysis_summary(state: dict) -> str:
     if ta := state.get("technical_analysis"):
         patterns = ta.get("chart_patterns", [])
         pattern_str = f" | Patrones: {', '.join(patterns)}" if patterns else ""
-        parts.append(f"TÉCNICO: Score={ta.get('score', 'N/A')} | Trend={ta.get('trend', '')} | RSI/MACD={ta.get('momentum', '')}{pattern_str}")
+        ind = ta.get("indicators") or {}
+        rsi, macd = ind.get("rsi_14"), ind.get("macd")
+        # Números reales calculados en Python, no lo que el LLM haya
+        # transcripto en `momentum` — ancla el debate a los valores exactos.
+        exact_str = ""
+        if rsi is not None or macd is not None:
+            exact_str = " | Exacto:" + (f" RSI={rsi:.1f}" if rsi is not None else "") + (f" MACD={macd:.2f}" if macd is not None else "")
+        parts.append(
+            f"TÉCNICO: Score={ta.get('score', 'N/A')} | Trend={ta.get('trend', '')} | "
+            f"RSI/MACD={ta.get('momentum', '')}{exact_str}{pattern_str}"
+        )
     if sa := state.get("sentiment_analysis"):
         sent_raw = state.get("sentiment") or {}
         missing = [
