@@ -2,9 +2,9 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import streamlit as st
-import httpx
 from datetime import date as _date
-from dashboard.api_client import API_BASE, fetch_watchlist, fetch_ohlc, fetch_suggestions, invalidate_ticker
+from dashboard.api_client import fetch_watchlist, fetch_ohlc, fetch_suggestions, invalidate_ticker, trigger_analysis
+from dashboard.job_tracker import track_job, has_active_job, poll_tracked_jobs, autorefresh_if_active
 from dashboard.components.signal_card import render_signal_card, get_conviction
 from dashboard.components.animations import EASING, inject_page_transition
 from dashboard.components.charts import render_candlestick_chart
@@ -15,6 +15,12 @@ st.title("Sugerencia")
 inject_page_transition()
 
 
+def _on_analysis_done(meta: dict, job: dict) -> None:
+    invalidate_ticker(meta["ticker"])
+
+
+poll_tracked_jobs(on_done=_on_analysis_done)
+
 # ── Ticker selector + run button ─────────────────────────────────────────────
 watchlist = fetch_watchlist()
 if not watchlist:
@@ -23,29 +29,31 @@ if not watchlist:
 
 tickers = [t["ticker"] for t in watchlist]
 
-col_sel, col_btn, col_sp = st.columns([2, 1, 4])
+col_sel, col_btn, col_refresh, col_sp = st.columns([2, 1, 1, 3])
 with col_sel:
     ticker = st.selectbox("Ticker", tickers, label_visibility="collapsed")
 with col_btn:
-    run = st.button("↻ Analizar", type="primary", width="stretch")
+    busy = has_active_job(ticker)
+    run = st.button(
+        "⏳ Analizando…" if busy else "↻ Analizar",
+        type="primary", width="stretch", disabled=busy,
+    )
+with col_refresh:
+    if st.button("🔄 Refrescar", width="stretch",
+                  help="Por si un análisis se generó por otra vía (API, cron) y el caché no se enteró"):
+        invalidate_ticker(ticker)
+        st.rerun()
 
 if run:
     mkt = next((t.get("market", "US") for t in watchlist if t["ticker"] == ticker), "US")
-    with st.spinner(f"Analizando {ticker}… (1–2 minutos)"):
-        try:
-            r = httpx.post(
-                f"{API_BASE}/analysis/{ticker}",
-                params={"market": mkt},
-                timeout=180,
-            )
-            if r.status_code == 200:
-                st.success("Análisis completado")
-                invalidate_ticker(ticker)
-                st.rerun()
-            else:
-                st.error(r.text)
-        except Exception as e:
-            st.error(str(e))
+    job = trigger_analysis(ticker, mkt)
+    if job:
+        track_job(job["job_id"], key=ticker, ticker=ticker, label="Análisis")
+        st.info(f"Análisis de {ticker} encolado — podés seguir usando el dashboard, avisamos cuando termine.")
+        st.rerun()
+
+if has_active_job(ticker):
+    st.caption(f"⏳ Hay un análisis de {ticker} en curso — esta página se actualiza sola cada pocos segundos.")
 
 # ── Suggestions ───────────────────────────────────────────────────────────────
 suggestions = fetch_suggestions(ticker)
@@ -55,6 +63,7 @@ if not suggestions:
 <div style="padding:40px 20px;text-align:center;color:#4a5568;font-size:0.9em;">
   Sin análisis para este ticker. Pulsa <b style="color:#e6edf3;">↻ Analizar</b> para generarlo.
 </div>""", unsafe_allow_html=True)
+    autorefresh_if_active()
     st.stop()
 
 latest = suggestions[0]
@@ -62,6 +71,21 @@ full   = latest.get("full_output") or {}
 
 # ── Signal hero card (full-width) ─────────────────────────────────────────────
 render_signal_card(latest)
+
+# ── Detalle por sub-agente (trazabilidad) ─────────────────────────────────────
+sub = full.get("sub_analyses")
+if sub:
+    with st.expander("🔍 Detalle por sub-agente (auditoría)", expanded=False):
+        labels = {
+            "fundamental": "Fundamental", "technical": "Técnico",
+            "sentiment": "Sentimiento", "macro": "Macro", "peer": "Peers",
+        }
+        for key, label in labels.items():
+            data = sub.get(key)
+            if not data:
+                continue
+            st.markdown(f"**{label}**")
+            st.json(data, expanded=False)
 
 # ── Earnings alert ────────────────────────────────────────────────────────────
 ue = full.get("upcoming_earnings")
@@ -160,3 +184,5 @@ if len(suggestions) > 1:
         dstr = str(s.get("created_at", ""))[:10]
         with st.expander(f"Razonamiento {dstr}", expanded=False):
             st.write(s.get("final_reasoning", ""))
+
+autorefresh_if_active()

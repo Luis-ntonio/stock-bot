@@ -134,6 +134,15 @@ Toma la decisión final de inversión para el próximo mes.
         chart_patterns=(state.get("technical_analysis") or {}).get("chart_patterns", []),
         upcoming_earnings=state.get("upcoming_earnings"),
         earnings_history=state.get("earnings") or [],
+        sub_analyses={
+            "fundamental": state.get("fundamental_analysis"),
+            "technical": state.get("technical_analysis"),
+            "sentiment": state.get("sentiment_analysis"),
+            "macro": state.get("macro_analysis"),
+            "peer": state.get("peer_analysis"),
+            "bull_full": bull.model_dump(),
+            "bear_full": bear.model_dump(),
+        },
         llm_model_used=model_used,
         data_sources=state.get("data_sources", ["yfinance", "finnhub", "fmp"]),
     )
@@ -146,26 +155,77 @@ def _build_analysis_summary(state: dict) -> str:
     from datetime import date as _date
     parts = []
     if fa := state.get("fundamental_analysis"):
-        parts.append(f"FUNDAMENTAL: Score={fa.get('score', 'N/A')} | {fa.get('valuation_verdict', '')}")
+        fund_raw = state.get("fundamentals") or {}
+        rev_g = fund_raw.get("revenue_growth_yoy")
+        eps_g = fund_raw.get("earnings_growth_yoy")
+        growth_str = ""
+        if rev_g is not None or eps_g is not None:
+            growth_str = (
+                f" | Revenue YoY={rev_g*100:+.1f}%" if rev_g is not None else ""
+            ) + (
+                f" | Earnings YoY={eps_g*100:+.1f}%" if eps_g is not None else ""
+            )
+        parts.append(f"FUNDAMENTAL: Score={fa.get('score', 'N/A')} | {fa.get('valuation_verdict', '')}{growth_str}")
     if ta := state.get("technical_analysis"):
         patterns = ta.get("chart_patterns", [])
         pattern_str = f" | Patrones: {', '.join(patterns)}" if patterns else ""
         parts.append(f"TÉCNICO: Score={ta.get('score', 'N/A')} | Trend={ta.get('trend', '')} | RSI/MACD={ta.get('momentum', '')}{pattern_str}")
     if sa := state.get("sentiment_analysis"):
-        parts.append(f"SENTIMIENTO: Score={sa.get('score', 'N/A')} | {sa.get('overall_sentiment', '')}")
+        sent_raw = state.get("sentiment") or {}
+        missing = [
+            k for k in ("reddit_mentions_7d", "stocktwits_sentiment", "news_sentiment_score")
+            if sent_raw.get(k) is None
+        ]
+        gap_str = f" | DATOS FALTANTES: {', '.join(missing)}" if missing else ""
+        contrarian = (sa.get("contrarian_signal") or "")[:200]
+        contrarian_str = f" | Señal contraria: {contrarian}" if contrarian else ""
+        parts.append(
+            f"SENTIMIENTO: Score={sa.get('score', 'N/A')} | {sa.get('overall_sentiment', '')}"
+            f"{gap_str}{contrarian_str}"
+        )
     if ma := state.get("macro_analysis"):
         parts.append(f"MACRO: Score={ma.get('score', 'N/A')} | {ma.get('macro_verdict', '')}")
     if pa := state.get("peer_analysis"):
         parts.append(f"PEERS: {pa.get('peer_verdict', '')}")
-    if ue := state.get("upcoming_earnings"):
-        if ue.get("date"):
-            try:
-                days_away = (_date.fromisoformat(ue["date"]) - _date.today()).days
-                if days_away <= 30:
-                    parts.append(f"EARNINGS ALERT: earnings en {days_away} días ({ue['date']}) — ELEVA INCERTIDUMBRE A CORTO PLAZO")
-            except Exception:
-                pass
+    ue = state.get("upcoming_earnings") or {}
+    earnings_alerted = False
+    if ue.get("date"):
+        try:
+            days_away = (_date.fromisoformat(ue["date"]) - _date.today()).days
+            if days_away <= 30:
+                parts.append(f"EARNINGS ALERT: earnings en {days_away} días ({ue['date']}) — ELEVA INCERTIDUMBRE A CORTO PLAZO")
+                earnings_alerted = True
+        except Exception:
+            pass
+
+    # El calendario de earnings a veces no trae fecha (API vacía) aunque las
+    # noticias del mismo ciclo ya estén hablando del reporte — sin esto, la
+    # señal final se calcula ciega a un catalizador de volatilidad real que
+    # el propio pipeline ya tenía en sus manos (visto con META: earnings "el
+    # miércoles" mencionado en un titular, upcoming_earnings vacío, y el
+    # resultado final sin ningún caveat de timing).
+    if not earnings_alerted and _headlines_mention_earnings(state.get("ticker", ""), state.get("sentiment") or {}):
+        parts.append(
+            "EARNINGS ALERT (fecha no confirmada por el calendario): una noticia reciente "
+            "menciona earnings próximos para este ticker — tratá esto como un catalizador de "
+            "volatilidad real pese a no tener la fecha exacta. ELEVA INCERTIDUMBRE A CORTO PLAZO."
+        )
+
     return "\n".join(parts) if parts else "No analysis data available"
+
+
+def _headlines_mention_earnings(ticker: str, sentiment_data: dict) -> bool:
+    """Heurística barata: ¿algún titular menciona a la vez el ticker y la
+    palabra 'earnings'/'reports'? No intenta extraer la fecha — solo decidir
+    si hay que prender la alerta aunque el calendario oficial esté vacío."""
+    if not ticker:
+        return False
+    markers = (f"${ticker.upper()}", ticker.upper())
+    for headline in sentiment_data.get("key_headlines", []):
+        h = headline.upper()
+        if any(m in h for m in markers) and ("EARNINGS" in h or "REPORTS" in h):
+            return True
+    return False
 
 
 def _extract_current_price(state: dict) -> float | None:

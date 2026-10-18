@@ -22,7 +22,7 @@ st.markdown(
 )
 
 st.markdown("""
-<div style="margin-top:32px;display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+<div style="margin-top:32px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
   <a href="/suggestion" target="_self" style="text-decoration:none;">
     <div style="background:#0f1923;border:1px solid #1e2938;border-radius:8px;padding:20px;
                 transition:border-color 150ms ease;">
@@ -30,6 +30,14 @@ st.markdown("""
                   text-transform:uppercase;margin-bottom:6px;">Principal</div>
       <div style="font-size:1.05em;font-weight:600;color:#e6edf3;">Sugerencia</div>
       <div style="font-size:0.82em;color:#4a5568;margin-top:4px;">Señal activa y análisis por ticker</div>
+    </div>
+  </a>
+  <a href="/portafolio" target="_self" style="text-decoration:none;">
+    <div style="background:#0f1923;border:1px solid #1e2938;border-radius:8px;padding:20px;">
+      <div style="font-size:0.65em;color:#6e7681;letter-spacing:0.10em;
+                  text-transform:uppercase;margin-bottom:6px;">Posiciones</div>
+      <div style="font-size:1.05em;font-weight:600;color:#e6edf3;">Portafolio</div>
+      <div style="font-size:0.82em;color:#4a5568;margin-top:4px;">¿Mantener o vender según fecha de compra?</div>
     </div>
   </a>
   <a href="/fundamentals" target="_self" style="text-decoration:none;">

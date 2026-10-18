@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import structlog
 
-from app.api import health, tickers, analysis, suggestions, price, latam
+from app.api import health, tickers, analysis, suggestions, price, latam, positions, jobs
 from app.scheduler import scheduler
 from app.data.rate_limiter import init_rate_limiter
 
@@ -41,3 +41,5 @@ app.include_router(analysis.router, prefix="/api")
 app.include_router(suggestions.router, prefix="/api")
 app.include_router(price.router, prefix="/api")
 app.include_router(latam.router, prefix="/api")
+app.include_router(positions.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")

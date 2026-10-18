@@ -84,6 +84,12 @@ class StockSuggestion(BaseModel):
     upcoming_earnings: dict | None = None
     earnings_history: list[dict] = Field(default_factory=list)
 
+    # Trazabilidad: salida cruda de cada sub-agente (score + verdict + campos
+    # de soporte) tal como llegó al debate bull/bear. Sin esto no hay forma de
+    # auditar de dónde salió una afirmación del reasoning final — se persiste
+    # vía full_output, no se recorta.
+    sub_analyses: dict | None = None
+
     # Metadatos
     llm_model_used: str
     data_sources: list[str]

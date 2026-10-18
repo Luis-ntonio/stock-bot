@@ -1,7 +1,9 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import select, desc, delete
 from datetime import date, datetime
-from app.db.models import Company, PriceHistory, FundamentalData, EarningsRecord, NewsItem, Suggestion
+from app.db.models import (
+    Company, PriceHistory, FundamentalData, EarningsRecord, NewsItem, Suggestion, Position, AnalysisJob,
+)
 from app.llm.schemas import StockSuggestion
 
 
@@ -125,3 +127,121 @@ def get_latest_suggestion(db: Session, ticker: str) -> Suggestion | None:
         .limit(1)
     )
     return db.scalar(stmt)
+
+
+# ── Positions (holdings a revisar: ¿mantener o vender?) ──────────────────────
+
+def create_position(
+    db: Session,
+    ticker: str,
+    purchase_date: date,
+    purchase_price: float,
+    quantity: float = 1.0,
+    notes: str | None = None,
+) -> Position:
+    position = Position(
+        ticker=ticker,
+        purchase_date=purchase_date,
+        purchase_price=purchase_price,
+        quantity=quantity,
+        notes=notes,
+    )
+    db.add(position)
+    db.commit()
+    db.refresh(position)
+    return position
+
+
+def get_positions(db: Session, active_only: bool = True) -> list[Position]:
+    stmt = select(Position).order_by(desc(Position.purchase_date))
+    if active_only:
+        stmt = stmt.where(Position.active == True)
+    return list(db.scalars(stmt))
+
+
+def get_position(db: Session, position_id: int) -> Position | None:
+    return db.get(Position, position_id)
+
+
+def close_position(db: Session, position_id: int) -> Position | None:
+    position = db.get(Position, position_id)
+    if not position:
+        return None
+    position.active = False
+    position.closed_at = datetime.utcnow()
+    db.commit()
+    db.refresh(position)
+    return position
+
+
+def delete_position(db: Session, position_id: int) -> bool:
+    position = db.get(Position, position_id)
+    if not position:
+        return False
+    db.delete(position)
+    db.commit()
+    return True
+
+
+# ── Analysis jobs (análisis/revisión de posición en background) ─────────────
+
+def find_active_job(
+    db: Session, job_type: str, ticker: str, position_id: int | None = None
+) -> AnalysisJob | None:
+    """Evita encolar un duplicado si ya hay un job queued/running para el
+    mismo ticker (y, si aplica, la misma posición)."""
+    stmt = select(AnalysisJob).where(
+        AnalysisJob.job_type == job_type,
+        AnalysisJob.ticker == ticker,
+        AnalysisJob.status.in_(["queued", "running"]),
+    )
+    if position_id is not None:
+        stmt = stmt.where(AnalysisJob.position_id == position_id)
+    return db.scalar(stmt.order_by(desc(AnalysisJob.created_at)))
+
+
+def create_job(
+    db: Session, job_type: str, ticker: str, market: str | None = None, position_id: int | None = None
+) -> AnalysisJob:
+    job = AnalysisJob(job_type=job_type, ticker=ticker, market=market, position_id=position_id)
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def get_job(db: Session, job_id: int) -> AnalysisJob | None:
+    return db.get(AnalysisJob, job_id)
+
+
+def list_jobs(db: Session, status: str | None = None, limit: int = 50) -> list[AnalysisJob]:
+    stmt = select(AnalysisJob).order_by(desc(AnalysisJob.created_at)).limit(limit)
+    if status:
+        stmt = stmt.where(AnalysisJob.status == status)
+    return list(db.scalars(stmt))
+
+
+def mark_job_running(db: Session, job_id: int) -> None:
+    job = db.get(AnalysisJob, job_id)
+    if job:
+        job.status = "running"
+        job.started_at = datetime.utcnow()
+        db.commit()
+
+
+def mark_job_done(db: Session, job_id: int, result: dict) -> None:
+    job = db.get(AnalysisJob, job_id)
+    if job:
+        job.status = "done"
+        job.result = result
+        job.finished_at = datetime.utcnow()
+        db.commit()
+
+
+def mark_job_failed(db: Session, job_id: int, error: str) -> None:
+    job = db.get(AnalysisJob, job_id)
+    if job:
+        job.status = "failed"
+        job.error = error
+        job.finished_at = datetime.utcnow()
+        db.commit()

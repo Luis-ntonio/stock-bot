@@ -124,3 +124,44 @@ class Suggestion(Base):
     full_output = Column(JSON, nullable=True)
 
     company = relationship("Company", back_populates="suggestions")
+
+
+class Position(Base):
+    """Una posición (acción comprada) que el usuario quiere monitorear para
+    decidir si conviene mantenerla o venderla, en base a la fecha/precio de
+    compra y el análisis fresco del ticker."""
+
+    __tablename__ = "positions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ticker = Column(String(20), ForeignKey("companies.ticker"), nullable=False)
+    purchase_date = Column(Date, nullable=False)
+    purchase_price = Column(Float, nullable=False)
+    quantity = Column(Float, nullable=False, default=1.0)
+    notes = Column(String(500), nullable=True)
+    active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
+
+    company = relationship("Company")
+
+
+class AnalysisJob(Base):
+    """Trabajo en background para análisis de ticker o revisión de posición.
+    Permite que el front dispare el trabajo, se desentienda de la conexión
+    HTTP, y haga polling del resultado — en vez de bloquear una request de
+    ~20+ minutos contra FreeToken."""
+
+    __tablename__ = "analysis_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_type = Column(String(20), nullable=False)  # "analysis" | "position_review"
+    ticker = Column(String(20), nullable=False)
+    market = Column(String(10), nullable=True)
+    position_id = Column(Integer, ForeignKey("positions.id"), nullable=True)
+    status = Column(String(20), nullable=False, default="queued")  # queued|running|done|failed
+    result = Column(JSON, nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
